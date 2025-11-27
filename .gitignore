@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Known faces (contains user photos)
+known_faces/*.jpg
+known_faces/*.jpeg
+known_faces/*.png
+known_faces/metadata.json
+
+# Keep directory but ignore contents
+!known_faces/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
