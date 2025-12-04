@@ -29,3 +29,5 @@ known_faces/metadata.json
 # OS
 .DS_Store
 Thumbs.db
+
+/.venv

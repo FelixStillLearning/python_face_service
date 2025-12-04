@@ -1,329 +1,355 @@
 """
 Smart Home Face Recognition Service
-Flask REST API for face recognition using face_recognition library
+====================================
+API endpoints:
+- POST /recognize  - Recognize face from image
+- POST /enroll     - Enroll new face
+- POST /reload     - Reload known faces
+- GET  /health     - Health check
+- GET  /faces      - List enrolled faces
 """
 
+import os
+import cv2
+import base64
+import pickle
+import numpy as np
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import face_recognition
-import numpy as np
-import base64
-import os
-import json
-from datetime import datetime
-import cv2
+
+# Try to import face_recognition, fallback to haar cascade if not available
+try:
+    import face_recognition
+    USE_FACE_RECOGNITION = True
+    print("✅ Using face_recognition library (dlib)")
+except ImportError:
+    USE_FACE_RECOGNITION = False
+    print("⚠️  face_recognition not available, using Haar Cascade (less accurate)")
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for Golang backend
+CORS(app)  # Enable CORS for all routes
 
 # Configuration
-KNOWN_FACES_DIR = "known_faces"
-CONFIDENCE_THRESHOLD = 0.6  # Lower = more strict (0.6 is recommended)
-
-# Create known_faces directory if not exists
+KNOWN_FACES_DIR = "./known_faces"
+CONFIDENCE_THRESHOLD = 0.6  # Lower = more strict (0.0 - 1.0)
 os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
 
-# Load known faces on startup
+# Global storage for known faces
 known_face_encodings = []
 known_face_names = []
-known_face_user_ids = []
+known_face_ids = []
+
+# Haar cascade for fallback
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
 
 def load_known_faces():
-    """Load all known faces from known_faces directory"""
-    global known_face_encodings, known_face_names, known_face_user_ids
+    """Load all known faces from disk"""
+    global known_face_encodings, known_face_names, known_face_ids
     
     known_face_encodings = []
     known_face_names = []
-    known_face_user_ids = []
+    known_face_ids = []
     
-    metadata_file = os.path.join(KNOWN_FACES_DIR, "metadata.json")
+    if not os.path.exists(KNOWN_FACES_DIR):
+        print("📁 Known faces directory not found, creating...")
+        os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
+        return 0
     
-    if not os.path.exists(metadata_file):
-        print("  No metadata.json found. No faces loaded.")
-        return
+    count = 0
+    for filename in os.listdir(KNOWN_FACES_DIR):
+        if filename.endswith('.pkl'):
+            filepath = os.path.join(KNOWN_FACES_DIR, filename)
+            try:
+                with open(filepath, 'rb') as f:
+                    data = pickle.load(f)
+                    known_face_encodings.append(data['encoding'])
+                    known_face_names.append(data['name'])
+                    known_face_ids.append(data['user_id'])
+                    count += 1
+                    print(f"  ✅ Loaded: {data['name']} (ID: {data['user_id']})")
+            except Exception as e:
+                print(f"  ❌ Error loading {filename}: {e}")
     
-    with open(metadata_file, 'r') as f:
-        metadata = json.load(f)
-    
-    for user_data in metadata:
-        user_id = user_data['user_id']
-        name = user_data['name']
-        image_path = user_data['image_path']
-        
-        full_path = os.path.join(KNOWN_FACES_DIR, image_path)
-        
-        if os.path.exists(full_path):
-            # Load image and get face encoding
-            image = face_recognition.load_image_file(full_path)
-            encodings = face_recognition.face_encodings(image)
-            
-            if len(encodings) > 0:
-                known_face_encodings.append(encodings[0])
-                known_face_names.append(name)
-                known_face_user_ids.append(user_id)
-                print(f" Loaded: {name} (user_id: {user_id})")
-            else:
-                print(f" No face found in {image_path}")
-        else:
-            print(f"  File not found: {full_path}")
-    
-    print(f"\n Total faces loaded: {len(known_face_encodings)}\n")
+    print(f"📊 Total faces loaded: {count}")
+    return count
 
 
-def base64_to_image(base64_string):
-    """Convert base64 string to numpy array (image)"""
+def decode_base64_image(base64_string):
+    """Decode base64 string to numpy array (image)"""
     try:
-        # Remove data:image/jpeg;base64, prefix if exists
-        if "base64," in base64_string:
-            base64_string = base64_string.split("base64,")[1]
+        # Remove header if present (e.g., "data:image/jpeg;base64,")
+        if ',' in base64_string:
+            base64_string = base64_string.split(',')[1]
         
-        # Decode base64
-        img_data = base64.b64decode(base64_string)
-        
-        # Convert to numpy array
-        nparr = np.frombuffer(img_data, np.uint8)
-        
-        # Decode image
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        # Convert BGR to RGB (OpenCV uses BGR, face_recognition uses RGB)
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        
-        return img_rgb
+        img_bytes = base64.b64decode(base64_string)
+        img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        return img
     except Exception as e:
-        print(f"❌ Error decoding base64: {e}")
+        print(f"❌ Error decoding image: {e}")
         return None
 
+
+def recognize_face_dlib(image):
+    """Recognize face using face_recognition library (dlib)"""
+    # Convert BGR to RGB
+    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
+    # Find faces in image
+    face_locations = face_recognition.face_locations(rgb_image)
+    
+    if not face_locations:
+        return None, None, 0.0, "No face detected"
+    
+    # Get face encodings
+    face_encodings = face_recognition.face_encodings(rgb_image, face_locations)
+    
+    if not face_encodings:
+        return None, None, 0.0, "Could not encode face"
+    
+    # Compare with known faces
+    for face_encoding in face_encodings:
+        if not known_face_encodings:
+            return None, None, 0.0, "No known faces enrolled"
+        
+        # Calculate face distances
+        face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+        
+        # Find best match
+        best_match_idx = np.argmin(face_distances)
+        best_distance = face_distances[best_match_idx]
+        
+        # Convert distance to confidence (0-1, higher is better)
+        confidence = 1 - best_distance
+        
+        if confidence >= CONFIDENCE_THRESHOLD:
+            return (
+                known_face_ids[best_match_idx],
+                known_face_names[best_match_idx],
+                confidence,
+                "Face recognized"
+            )
+    
+    return None, None, 0.0, "Face not recognized"
+
+
+def recognize_face_haar(image):
+    """Fallback: Recognize face using Haar Cascade (limited)"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
+    
+    if len(faces) == 0:
+        return None, None, 0.0, "No face detected"
+    
+    # Haar cascade can only detect, not recognize
+    # This is a placeholder - real recognition needs face_recognition library
+    return None, None, 0.0, "Face detected but recognition requires face_recognition library"
+
+
+def enroll_face_dlib(image, user_id, name):
+    """Enroll a new face using face_recognition library"""
+    # Convert BGR to RGB
+    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
+    # Find faces
+    face_locations = face_recognition.face_locations(rgb_image)
+    
+    if not face_locations:
+        return False, "No face detected in image"
+    
+    if len(face_locations) > 1:
+        return False, "Multiple faces detected, please use image with single face"
+    
+    # Get face encoding
+    face_encodings = face_recognition.face_encodings(rgb_image, face_locations)
+    
+    if not face_encodings:
+        return False, "Could not encode face"
+    
+    face_encoding = face_encodings[0]
+    
+    # Save to file
+    data = {
+        'user_id': user_id,
+        'name': name,
+        'encoding': face_encoding,
+        'enrolled_at': datetime.now().isoformat()
+    }
+    
+    filename = f"{user_id}_{name.replace(' ', '_')}.pkl"
+    filepath = os.path.join(KNOWN_FACES_DIR, filename)
+    
+    with open(filepath, 'wb') as f:
+        pickle.dump(data, f)
+    
+    # Reload faces
+    load_known_faces()
+    
+    return True, f"Face enrolled successfully for {name}"
+
+
+# ==================== API Endpoints ====================
 
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
     return jsonify({
-        "status": "healthy",
-        "service": "Face Recognition Service",
-        "known_faces": len(known_face_encodings)
-    }), 200
+        'success': True,
+        'service': 'face-recognition',
+        'status': 'running',
+        'face_recognition_lib': USE_FACE_RECOGNITION,
+        'known_faces_count': len(known_face_names)
+    })
 
 
 @app.route('/recognize', methods=['POST'])
-def recognize_face():
+def recognize():
     """
-    Recognize face from base64 image
+    Recognize face from image
     
     Request JSON:
     {
-        "image": "base64_encoded_image_string"
+        "image": "base64_encoded_image"
     }
     
-    Response:
+    Response JSON:
     {
         "success": true,
-        "recognized": true,
-        "user_id": 123,
-        "name": "John Doe",
-        "confidence": 0.45,
+        "recognized": true/false,
+        "user_id": 1,
+        "name": "John",
+        "confidence": 0.85,
         "message": "Face recognized"
     }
     """
     try:
-        # Get base64 image from request
         data = request.get_json()
         
         if not data or 'image' not in data:
             return jsonify({
-                "success": False,
-                "error": "No image provided"
+                'success': False,
+                'recognized': False,
+                'error': 'No image provided'
             }), 400
         
-        base64_image = data['image']
-        
-        # Convert base64 to image
-        image = base64_to_image(base64_image)
+        # Decode image
+        image = decode_base64_image(data['image'])
         
         if image is None:
             return jsonify({
-                "success": False,
-                "error": "Failed to decode image"
+                'success': False,
+                'recognized': False,
+                'error': 'Invalid image format'
             }), 400
         
-        # Find faces in the image
-        face_locations = face_recognition.face_locations(image)
+        print(f"📸 Received image: {image.shape}")
         
-        if len(face_locations) == 0:
-            return jsonify({
-                "success": True,
-                "recognized": False,
-                "message": "No face detected in image"
-            }), 200
-        
-        # Get face encodings
-        face_encodings = face_recognition.face_encodings(image, face_locations)
-        
-        if len(face_encodings) == 0:
-            return jsonify({
-                "success": True,
-                "recognized": False,
-                "message": "Could not encode face"
-            }), 200
-        
-        # Compare with known faces
-        face_encoding = face_encodings[0]  # Take first face
-        
-        if len(known_face_encodings) == 0:
-            return jsonify({
-                "success": True,
-                "recognized": False,
-                "message": "No known faces in database"
-            }), 200
-        
-        # Calculate face distances
-        face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-        best_match_index = np.argmin(face_distances)
-        best_distance = face_distances[best_match_index]
-        
-        # Check if match is good enough
-        if best_distance < CONFIDENCE_THRESHOLD:
-            # Face recognized!
-            user_id = known_face_user_ids[best_match_index]
-            name = known_face_names[best_match_index]
-            confidence = 1 - best_distance  # Convert distance to confidence
-            
-            print(f" Recognized: {name} (confidence: {confidence:.2f})")
-            
-            return jsonify({
-                "success": True,
-                "recognized": True,
-                "user_id": user_id,
-                "name": name,
-                "confidence": round(confidence, 2),
-                "message": f"Face recognized: {name}"
-            }), 200
+        # Recognize face
+        if USE_FACE_RECOGNITION:
+            user_id, name, confidence, message = recognize_face_dlib(image)
         else:
-            # Face not recognized
-            print(f"❌ Unknown face (best distance: {best_distance:.2f})")
-            
-            return jsonify({
-                "success": True,
-                "recognized": False,
-                "message": "Face not recognized",
-                "best_distance": round(best_distance, 2)
-            }), 200
-    
-    except Exception as e:
-        print(f"❌ Error in recognize_face: {e}")
+            user_id, name, confidence, message = recognize_face_haar(image)
+        
+        recognized = user_id is not None
+        
+        print(f"{'✅' if recognized else '❌'} Recognition result: {message}")
+        
         return jsonify({
-            "success": False,
-            "error": str(e)
+            'success': True,
+            'recognized': recognized,
+            'user_id': user_id,
+            'name': name,
+            'confidence': round(confidence, 4) if confidence else 0,
+            'message': message
+        })
+        
+    except Exception as e:
+        print(f"❌ Error in /recognize: {e}")
+        return jsonify({
+            'success': False,
+            'recognized': False,
+            'error': str(e)
         }), 500
 
 
 @app.route('/enroll', methods=['POST'])
-def enroll_face():
+def enroll():
     """
-    Enroll new face to database
+    Enroll new face
     
     Request JSON:
     {
-        "user_id": 123,
+        "user_id": 1,
         "name": "John Doe",
-        "image": "base64_encoded_image_string"
+        "image": "base64_encoded_image"
     }
     
-    Response:
+    Response JSON:
     {
         "success": true,
-        "message": "Face enrolled successfully",
-        "image_path": "user_123_timestamp.jpg"
+        "message": "Face enrolled successfully"
     }
     """
     try:
-        # Get data from request
         data = request.get_json()
         
-        if not data or 'user_id' not in data or 'name' not in data or 'image' not in data:
+        if not data:
             return jsonify({
-                "success": False,
-                "error": "Missing required fields: user_id, name, image"
+                'success': False,
+                'error': 'No data provided'
             }), 400
+        
+        required_fields = ['user_id', 'name', 'image']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({
+                    'success': False,
+                    'error': f'Missing required field: {field}'
+                }), 400
         
         user_id = data['user_id']
         name = data['name']
-        base64_image = data['image']
         
-        # Convert base64 to image
-        image = base64_to_image(base64_image)
+        # Decode image
+        image = decode_base64_image(data['image'])
         
         if image is None:
             return jsonify({
-                "success": False,
-                "error": "Failed to decode image"
+                'success': False,
+                'error': 'Invalid image format'
             }), 400
         
-        # Check if face exists in image
-        face_locations = face_recognition.face_locations(image)
+        print(f"📝 Enrolling face for: {name} (ID: {user_id})")
         
-        if len(face_locations) == 0:
+        if not USE_FACE_RECOGNITION:
             return jsonify({
-                "success": False,
-                "error": "No face detected in image"
-            }), 400
+                'success': False,
+                'error': 'Face enrollment requires face_recognition library. Please install it.'
+            }), 500
         
-        # Get face encoding
-        face_encodings = face_recognition.face_encodings(image, face_locations)
+        # Enroll face
+        success, message = enroll_face_dlib(image, user_id, name)
         
-        if len(face_encodings) == 0:
+        if success:
+            print(f"✅ {message}")
             return jsonify({
-                "success": False,
-                "error": "Could not encode face"
-            }), 400
-        
-        # Save image to known_faces directory
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"user_{user_id}_{timestamp}.jpg"
-        filepath = os.path.join(KNOWN_FACES_DIR, filename)
-        
-        # Convert RGB back to BGR for OpenCV
-        img_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-        cv2.imwrite(filepath, img_bgr)
-        
-        # Update metadata.json
-        metadata_file = os.path.join(KNOWN_FACES_DIR, "metadata.json")
-        
-        if os.path.exists(metadata_file):
-            with open(metadata_file, 'r') as f:
-                metadata = json.load(f)
+                'success': True,
+                'message': message
+            })
         else:
-            metadata = []
-        
-        # Add new entry
-        metadata.append({
-            "user_id": user_id,
-            "name": name,
-            "image_path": filename,
-            "enrolled_at": datetime.now().isoformat()
-        })
-        
-        # Save metadata
-        with open(metadata_file, 'w') as f:
-            json.dump(metadata, f, indent=2)
-        
-        # Reload known faces
-        load_known_faces()
-        
-        print(f" Enrolled: {name} (user_id: {user_id})")
-        
-        return jsonify({
-            "success": True,
-            "message": f"Face enrolled successfully: {name}",
-            "image_path": filename
-        }), 200
-    
+            print(f"❌ {message}")
+            return jsonify({
+                'success': False,
+                'error': message
+            }), 400
+            
     except Exception as e:
-        print(f"❌ Error in enroll_face: {e}")
+        print(f"❌ Error in /enroll: {e}")
         return jsonify({
-            "success": False,
-            "error": str(e)
+            'success': False,
+            'error': str(e)
         }), 500
 
 
@@ -331,45 +357,114 @@ def enroll_face():
 def reload_faces():
     """Reload all known faces from disk"""
     try:
-        load_known_faces()
+        count = load_known_faces()
         return jsonify({
-            "success": True,
-            "message": "Faces reloaded successfully",
-            "known_faces": len(known_face_encodings)
-        }), 200
+            'success': True,
+            'message': f'Reloaded {count} faces'
+        })
     except Exception as e:
         return jsonify({
-            "success": False,
-            "error": str(e)
+            'success': False,
+            'error': str(e)
         }), 500
 
 
-@app.route('/list', methods=['GET'])
+@app.route('/faces', methods=['GET'])
 def list_faces():
-    """List all known faces"""
+    """List all enrolled faces"""
     faces = []
-    for i in range(len(known_face_names)):
+    for i, name in enumerate(known_face_names):
         faces.append({
-            "user_id": known_face_user_ids[i],
-            "name": known_face_names[i]
+            'user_id': known_face_ids[i],
+            'name': name
         })
     
     return jsonify({
-        "success": True,
-        "total": len(faces),
-        "faces": faces
-    }), 200
+        'success': True,
+        'count': len(faces),
+        'faces': faces
+    })
 
+
+@app.route('/faces/<int:user_id>', methods=['DELETE'])
+def delete_face(user_id):
+    """Delete enrolled face by user_id"""
+    try:
+        deleted = False
+        for filename in os.listdir(KNOWN_FACES_DIR):
+            if filename.startswith(f"{user_id}_") and filename.endswith('.pkl'):
+                filepath = os.path.join(KNOWN_FACES_DIR, filename)
+                os.remove(filepath)
+                deleted = True
+                print(f"🗑️  Deleted: {filename}")
+        
+        if deleted:
+            load_known_faces()  # Reload
+            return jsonify({
+                'success': True,
+                'message': f'Face deleted for user_id: {user_id}'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': f'No face found for user_id: {user_id}'
+            }), 404
+            
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+# ==================== ESP32-CAM Streaming Test ====================
+
+@app.route('/stream-test', methods=['GET'])
+def stream_test_page():
+    """Simple HTML page to test ESP32-CAM stream"""
+    esp32_cam_url = request.args.get('url', 'http://192.168.1.58')
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head><title>ESP32-CAM Test</title></head>
+    <body>
+        <h1>ESP32-CAM Stream Test</h1>
+        <p>URL: {esp32_cam_url}</p>
+        <img src="{esp32_cam_url}/cam-hi.jpg" style="max-width:640px" id="cam">
+        <br><br>
+        <button onclick="refresh()">Refresh</button>
+        <button onclick="startAuto()">Auto Refresh</button>
+        <button onclick="stopAuto()">Stop</button>
+        <script>
+            let interval;
+            function refresh() {{
+                document.getElementById('cam').src = '{esp32_cam_url}/cam-hi.jpg?' + Date.now();
+            }}
+            function startAuto() {{
+                interval = setInterval(refresh, 500);
+            }}
+            function stopAuto() {{
+                clearInterval(interval);
+            }}
+        </script>
+    </body>
+    </html>
+    """
+
+
+# ==================== Main ====================
 
 if __name__ == '__main__':
-    print("=" * 50)
-    print(" Smart Home Face Recognition Service")
-    print("=" * 50)
+    print("\n" + "="*50)
+    print("🏠 Smart Home Face Recognition Service")
+    print("="*50)
     
     # Load known faces on startup
+    print("\n📂 Loading known faces...")
     load_known_faces()
     
-    # Start Flask server
-    print("\n Starting Flask server on http://localhost:5000")
-    print("=" * 50)
+    print(f"\n🚀 Starting server on http://localhost:5000")
+    print("="*50 + "\n")
+    
     app.run(host='0.0.0.0', port=5000, debug=True)
+
