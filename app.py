@@ -161,41 +161,43 @@ def validate_face():
         data = request.get_json()
         
         if not data or 'image' not in data:
-            return jsonify({'success': False, 'error': 'No image provided'}), 400
+            return jsonify({'valid': False, 'faces_detected': 0, 'message': 'No image provided'}), 400
         
         image = decode_base64_image(data['image'])
         
         if image is None:
-            return jsonify({'success': False, 'error': 'Invalid image format'}), 400
+            return jsonify({'valid': False, 'faces_detected': 0, 'message': 'Invalid image format'}), 400
         
         if not USE_FACE_RECOGNITION:
-            return jsonify({'success': False, 'error': 'Face recognition library not available'}), 500
+            return jsonify({'valid': False, 'faces_detected': 0, 'message': 'Face recognition library not available'}), 500
         
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         face_locations = face_recognition.face_locations(rgb_image)
         
-        if len(face_locations) == 0:
-            return jsonify({
-                'success': False,
-                'face_valid': False,
-                'error': 'No face detected. Pastikan pencahayaan baik dan wajah terlihat jelas'
-            }), 400
+        faces_count = len(face_locations)
         
-        if len(face_locations) > 1:
+        if faces_count == 0:
             return jsonify({
-                'success': False,
-                'face_valid': False,
-                'error': 'Multiple faces detected. Hanya 1 wajah yang diperbolehkan'
-            }), 400
+                'valid': False,
+                'faces_detected': 0,
+                'message': 'No face detected. Ensure good lighting and face is clearly visible'
+            }), 200
+        
+        if faces_count > 1:
+            return jsonify({
+                'valid': False,
+                'faces_detected': faces_count,
+                'message': f'Multiple faces detected ({faces_count}). Only 1 face is allowed'
+            }), 200
         
         return jsonify({
-            'success': True,
-            'face_valid': True,
-            'face_count': 1
-        })
+            'valid': True,
+            'faces_detected': 1,
+            'message': 'Face validation passed'
+        }), 200
         
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'valid': False, 'faces_detected': 0, 'message': str(e)}), 500
 
 
 @app.route('/enroll-base64', methods=['POST'])
@@ -227,17 +229,19 @@ def enroll_base64():
         
         success, message = enroll_face_dlib(image, user_id, name, sample_number)
         
+        filename = f"{user_id}_{name.replace(' ', '_')}_{sample_number}.pkl"
+        
         if success:
             return jsonify({
                 'success': True,
                 'message': message,
-                'filename': f"{user_id}_{name.replace(' ', '_')}_{sample_number}.pkl"
-            })
+                'file': filename  # Changed from 'filename' to 'file' to match Go client
+            }), 200
         else:
-            return jsonify({'success': False, 'error': message}), 400
+            return jsonify({'success': False, 'message': message}), 400
             
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/recognize', methods=['POST'])
@@ -418,4 +422,4 @@ def recognize_from_cam():
 
 if __name__ == '__main__':
     load_known_faces()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5001, debug=True)
