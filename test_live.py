@@ -14,11 +14,13 @@ import requests
 import time
 import pickle
 import os
+import base64
 
 # Konfigurasi
 ESP32_CAM_IP = '10.124.88.102'
 RESOLUTION = '640x480'
 KNOWN_FACES_DIR = './known_faces'
+PYTHON_SERVICE_URL = 'http://localhost:5001'  # Python Face Service
 
 # Load face_recognition jika ada
 try:
@@ -140,37 +142,50 @@ def enroll_face(frame, user_id, name):
     return True
 
 def recognize_face(frame):
-    """Kenali muka dari frame"""
+    """Kenali muka dari frame - POST ke Python Service (MQTT Auto-trigger)"""
     if not USE_DLIB:
         print("❌ Recognition butuh face_recognition library!")
         return None, None, 0
     
-    if len(known_encodings) == 0:
-        print("❌ Belum ada muka terdaftar!")
-        return None, None, 0
+    # Convert frame ke Base64
+    _, buffer = cv2.imencode('.jpg', frame)
+    img_base64 = base64.b64encode(buffer).decode('utf-8')
+    image_data = f"data:image/jpeg;base64,{img_base64}"
     
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    face_locations = face_recognition.face_locations(rgb)
+    print("📤 Sending to Python service...")
     
-    if len(face_locations) == 0:
-        print("❌ Tidak ada muka terdeteksi!")
-        return None, None, 0
-    
-    encodings = face_recognition.face_encodings(rgb, face_locations)
-    
-    if not encodings:
-        return None, None, 0
-    
-    # Compare dengan semua muka terdaftar
-    for encoding in encodings:
-        distances = face_recognition.face_distance(known_encodings, encoding)
-        best_idx = np.argmin(distances)
-        confidence = 1 - distances[best_idx]
+    try:
+        # POST ke Python service (/recognize-base64)
+        response = requests.post(
+            f"{PYTHON_SERVICE_URL}/recognize-base64",
+            json={"image": image_data},
+            timeout=10
+        )
         
-        if confidence >= 0.6:  # Threshold
-            return known_ids[best_idx], known_names[best_idx], confidence
-    
-    return None, None, 0
+        if response.status_code == 200:
+            result = response.json()
+            
+            if result.get('recognized'):
+                user_id = result.get('user_id')
+                name = result.get('name')
+                confidence = result.get('confidence')
+                
+                print(f"✅ RECOGNIZED: {name} (ID: {user_id})")
+                print(f"   Confidence: {confidence:.2%}")
+                print("🚪 MQTT Published: Door unlock command sent!")
+                
+                return user_id, name, confidence
+            else:
+                print("❌ NOT RECOGNIZED")
+                print("🔔 MQTT Published: Buzzer warning sent!")
+                return None, None, 0
+        else:
+            print(f"❌ Service error: {response.status_code}")
+            return None, None, 0
+            
+    except Exception as e:
+        print(f"❌ Connection error: {e}")
+        return None, None, 0
 
 def countdown_enroll(frame, seconds=4):
     """Countdown sebelum daftar dengan preview"""
@@ -209,10 +224,9 @@ def main():
     print("🎥 LIVE FACE RECOGNITION TEST")
     print("="*60)
     print(f"📷 Camera: {ESP32_CAM_IP}")
-    print(f"📐 Resolution: {RESOLUTION}")
     print("\n⌨️  Controls:")
     print("   SPACE  = Enroll (daftar muka)")
-    print("   R      = Recognize (kenali muka)")
+    print("   R      = Recognize (POST ke Python Service → MQTT → Door)")
     print("   Q      = Quit")
     print("="*60 + "\n")
     

@@ -5,9 +5,18 @@ import pickle
 import numpy as np
 import requests
 import time
+import json
 from datetime import datetime
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
+
+# MQTT Client
+try:
+    import paho.mqtt.client as mqtt
+    MQTT_AVAILABLE = True
+except ImportError:
+    MQTT_AVAILABLE = False
+    print("⚠️  paho-mqtt not installed. MQTT features disabled.")
 
 try:
     import face_recognition
@@ -26,7 +35,25 @@ ESP32_CAM_IP = os.getenv('ESP32_CAM_IP', '10.124.88.102')
 ESP32_CAM_RESOLUTION = '640x480'
 ESP32_CAM_TIMEOUT = 10
 
-BACKEND_GO_URL = os.getenv('BACKEND_GO_URL', 'http://10.124.88.57:8080')
+BACKEND_GO_URL = os.getenv('BACKEND_GO_URL', 'http://localhost:8080')
+
+# MQTT Configuration
+MQTT_BROKER = os.getenv('MQTT_BROKER', 'broker.hivemq.com')
+MQTT_PORT = int(os.getenv('MQTT_PORT', '1883'))
+MQTT_TOPIC_PREFIX = 'iotcihuy/home'
+
+# Initialize MQTT Client
+mqtt_client = None
+if MQTT_AVAILABLE:
+    mqtt_client = mqtt.Client(client_id="python_face_service")
+    try:
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.loop_start()
+        print(f"✅ MQTT Connected: {MQTT_BROKER}:{MQTT_PORT}")
+    except Exception as e:
+        print(f"⚠️  MQTT Connection failed: {e}")
+        mqtt_client = None
+
 
 known_face_encodings = []
 known_face_names = []
@@ -418,6 +445,92 @@ def recognize_from_cam():
         
     except Exception as e:
         return jsonify({'success': False, 'recognized': False, 'error': str(e)}), 500
+
+
+@app.route('/recognize-base64', methods=['POST'])
+def recognize_base64():
+    """
+    Recognize face from Base64 image (for testing & web frontend)
+    Request: { "image": "data:image/jpeg;base64,..." }
+    """
+    try:
+        data = request.get_json()
+        
+        if not data or 'image' not in data:
+            return jsonify({
+                'success': False,
+                'recognized': False,
+                'message': 'No image provided'
+            }), 400
+        
+        image = decode_base64_image(data['image'])
+        
+        if image is None:
+            return jsonify({
+                'success': False,
+                'recognized': False,
+                'message': 'Invalid image format'
+            }), 400
+        
+        if not USE_FACE_RECOGNITION:
+            return jsonify({
+                'success': False,
+                'recognized': False,
+                'message': 'Face recognition library not available'
+            }), 500
+        
+        user_id, name, confidence, message = recognize_face_dlib(image)
+        
+        recognized = user_id is not None
+        
+        # 🔌 PUBLISH MQTT - Control door/buzzer based on recognition result
+        if mqtt_client:
+            if recognized:
+                # UNLOCK DOOR
+                door_payload = json.dumps({"action": "unlock", "user_id": user_id, "name": name})
+                mqtt_client.publish(f"{MQTT_TOPIC_PREFIX}/door/control", door_payload)
+                print(f"📤 MQTT: Door unlock for {name}")
+                
+                # Log access ke backend
+                try:
+                    requests.post(f"{BACKEND_GO_URL}/api/access-log", json={
+                        "user_id": user_id,
+                        "method": "face",
+                        "status": "success"
+                    }, timeout=3)
+                except:
+                    pass
+            else:
+                # BUZZER WARNING
+                buzzer_payload = json.dumps({"action": "on", "duration": 1000})
+                mqtt_client.publish(f"{MQTT_TOPIC_PREFIX}/buzzer/control", buzzer_payload)
+                print(f"📤 MQTT: Buzzer warning - Unknown face")
+                
+                # Log failed attempt
+                try:
+                    requests.post(f"{BACKEND_GO_URL}/api/access-log", json={
+                        "method": "face",
+                        "status": "failed",
+                        "message": "Face not recognized"
+                    }, timeout=3)
+                except:
+                    pass
+        
+        return jsonify({
+            'success': True,
+            'recognized': recognized,
+            'user_id': user_id,
+            'name': name,
+            'confidence': round(confidence, 4) if confidence else 0,
+            'message': message
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'recognized': False,
+            'error': str(e)
+        }), 500
 
 
 if __name__ == '__main__':
