@@ -26,6 +26,10 @@ except ImportError:
     USE_FACE_RECOGNITION = False
 
 app = Flask(__name__)
+
+# Configure max content length (50MB) to handle large base64 images
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
+
 # Enable CORS with explicit configuration
 CORS(app, 
      resources={r"/*": {
