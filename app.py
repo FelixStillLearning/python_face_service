@@ -185,21 +185,35 @@ def recognize_face_dlib(image):
 
 
 def enroll_face_dlib(image, user_id, name, sample_number=1):
-    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    face_locations = face_recognition.face_locations(rgb_image)
-    
-    if not face_locations:
-        return False, "No face detected in image"
-    
-    if len(face_locations) > 1:
-        return False, "Multiple faces detected"
-    
-    face_encodings = face_recognition.face_encodings(rgb_image, face_locations)
+    print(f"[enroll_face_dlib] Processing image for user {user_id}")
+    try:
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        print("[enroll_face_dlib] Detecting face locations...")
+        face_locations = face_recognition.face_locations(rgb_image)
+        print(f"[enroll_face_dlib] Found {len(face_locations)} face(s)")
+        
+        if not face_locations:
+            print("[enroll_face_dlib] No face detected")
+            return False, "No face detected in image"
+        
+        if len(face_locations) > 1:
+            print("[enroll_face_dlib] Multiple faces detected")
+            return False, "Multiple faces detected"
+        
+        print("[enroll_face_dlib] Encoding face...")
+        face_encodings = face_recognition.face_encodings(rgb_image, face_locations)
+    except Exception as e:
+        print(f"[enroll_face_dlib] Exception during face detection: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False, f"Error during face detection: {str(e)}"
     
     if not face_encodings:
+        print("[enroll_face_dlib] Could not encode face")
         return False, "Could not encode face"
     
     face_encoding = face_encodings[0]
+    print("[enroll_face_dlib] Face encoded successfully")
     
     data = {
         'user_id': user_id,
@@ -211,11 +225,19 @@ def enroll_face_dlib(image, user_id, name, sample_number=1):
     
     filename = f"{user_id}_{name.replace(' ', '_')}_{sample_number}.pkl"
     filepath = os.path.join(KNOWN_FACES_DIR, filename)
+    print(f"[enroll_face_dlib] Saving to: {filepath}")
     
-    with open(filepath, 'wb') as f:
-        pickle.dump(data, f)
+    try:
+        with open(filepath, 'wb') as f:
+            pickle.dump(data, f)
+        print(f"[enroll_face_dlib] File saved successfully")
+    except Exception as e:
+        print(f"[enroll_face_dlib] Error saving file: {str(e)}")
+        return False, f"Error saving face data: {str(e)}"
     
+    print("[enroll_face_dlib] Reloading known faces...")
     load_known_faces()
+    print(f"[enroll_face_dlib] Success! Total known faces: {len(known_face_names)}")
     
     return True, f"Face enrolled successfully"
 
@@ -233,26 +255,38 @@ def health_check():
 
 @app.route('/validate-face', methods=['POST'])
 def validate_face():
+    print("\n" + "="*50)
+    print("[VALIDATE-FACE] Request received")
     try:
         data = request.get_json()
+        print(f"[VALIDATE-FACE] Data received: {data is not None}")
         
         if not data or 'image' not in data:
+            print("[VALIDATE-FACE] ERROR: No image in request")
             return jsonify({'valid': False, 'faces_detected': 0, 'message': 'No image provided'}), 400
         
+        print(f"[VALIDATE-FACE] Image data length: {len(data['image'])} characters")
         image = decode_base64_image(data['image'])
         
         if image is None:
+            print("[VALIDATE-FACE] ERROR: Failed to decode image")
             return jsonify({'valid': False, 'faces_detected': 0, 'message': 'Invalid image format'}), 400
         
         if not USE_FACE_RECOGNITION:
+            print("[VALIDATE-FACE] ERROR: face_recognition library not available")
             return jsonify({'valid': False, 'faces_detected': 0, 'message': 'Face recognition library not available'}), 500
         
+        print(f"[VALIDATE-FACE] Image shape: {image.shape}")
+        print("[VALIDATE-FACE] Converting to RGB...")
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        print("[VALIDATE-FACE] Detecting faces...")
         face_locations = face_recognition.face_locations(rgb_image)
+        print(f"[VALIDATE-FACE] Faces detected: {len(face_locations)}")
         
         faces_count = len(face_locations)
         
         if faces_count == 0:
+            print("[VALIDATE-FACE] RESULT: No face detected")
             return jsonify({
                 'valid': False,
                 'faces_detected': 0,
@@ -260,12 +294,15 @@ def validate_face():
             }), 200
         
         if faces_count > 1:
+            print(f"[VALIDATE-FACE] RESULT: Multiple faces ({faces_count})")
             return jsonify({
                 'valid': False,
                 'faces_detected': faces_count,
                 'message': f'Multiple faces detected ({faces_count}). Only 1 face is allowed'
             }), 200
         
+        print("[VALIDATE-FACE] SUCCESS: 1 valid face detected")
+        print("="*50 + "\n")
         return jsonify({
             'valid': True,
             'faces_detected': 1,
@@ -273,50 +310,74 @@ def validate_face():
         }), 200
         
     except Exception as e:
+        print(f"[VALIDATE-FACE] EXCEPTION: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        print("="*50 + "\n")
         return jsonify({'valid': False, 'faces_detected': 0, 'message': str(e)}), 500
 
 
 @app.route('/enroll-base64', methods=['POST'])
 def enroll_base64():
+    print("\n" + "="*50)
+    print("[ENROLL-BASE64] Request received")
     try:
         data = request.get_json()
+        print(f"[ENROLL-BASE64] Data received: {data is not None}")
         
         if not data:
+            print("[ENROLL-BASE64] ERROR: No data provided")
             return jsonify({'success': False, 'error': 'No data provided'}), 400
         
         required_fields = ['user_id', 'name', 'image']
         for field in required_fields:
             if field not in data:
+                print(f"[ENROLL-BASE64] ERROR: Missing field: {field}")
                 return jsonify({'success': False, 'error': f'Missing field: {field}'}), 400
         
         user_id = data['user_id']
         name = data['name']
+        print(f"[ENROLL-BASE64] User ID: {user_id}, Name: {name}")
+        print(f"[ENROLL-BASE64] Image data length: {len(data['image'])} characters")
         
         image = decode_base64_image(data['image'])
         
         if image is None:
+            print("[ENROLL-BASE64] ERROR: Failed to decode image")
             return jsonify({'success': False, 'error': 'Invalid image format'}), 400
         
         if not USE_FACE_RECOGNITION:
+            print("[ENROLL-BASE64] ERROR: face_recognition library not available")
             return jsonify({'success': False, 'error': 'Face recognition library not available'}), 500
         
+        print(f"[ENROLL-BASE64] Image shape: {image.shape}")
         existing_count = len([f for f in os.listdir(KNOWN_FACES_DIR) if f.startswith(f"{user_id}_")])
         sample_number = existing_count + 1
+        print(f"[ENROLL-BASE64] Sample number: {sample_number}")
         
+        print("[ENROLL-BASE64] Starting enrollment process...")
         success, message = enroll_face_dlib(image, user_id, name, sample_number)
         
         filename = f"{user_id}_{name.replace(' ', '_')}_{sample_number}.pkl"
         
         if success:
+            print(f"[ENROLL-BASE64] SUCCESS: {filename}")
+            print("="*50 + "\n")
             return jsonify({
                 'success': True,
                 'message': message,
                 'file': filename  # Changed from 'filename' to 'file' to match Go client
             }), 200
         else:
+            print(f"[ENROLL-BASE64] FAILED: {message}")
+            print("="*50 + "\n")
             return jsonify({'success': False, 'message': message}), 400
             
     except Exception as e:
+        print(f"[ENROLL-BASE64] EXCEPTION: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        print("="*50 + "\n")
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
