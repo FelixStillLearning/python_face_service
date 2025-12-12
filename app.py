@@ -45,7 +45,7 @@ def after_request(response):
     return response
 
 KNOWN_FACES_DIR = "./known_faces"
-CONFIDENCE_THRESHOLD = float(os.getenv('CONFIDENCE_THRESHOLD', '0.45'))
+CONFIDENCE_THRESHOLD = float(os.getenv('CONFIDENCE_THRESHOLD', '0.5'))
 os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
 
 ESP32_CAM_IP = os.getenv('ESP32_CAM_IP', '10.124.88.102')
