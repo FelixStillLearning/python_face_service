@@ -17,7 +17,7 @@ try:
     MQTT_AVAILABLE = True
 except ImportError:
     MQTT_AVAILABLE = False
-    print("⚠️  paho-mqtt not installed. MQTT features disabled.")
+    print("  paho-mqtt not installed. MQTT features disabled.")
 
 try:
     import face_recognition
@@ -49,10 +49,10 @@ def after_request(response):
     return response
 
 KNOWN_FACES_DIR = "./known_faces"
-CONFIDENCE_THRESHOLD = float(os.getenv('CONFIDENCE_THRESHOLD', '0.5'))
+CONFIDENCE_THRESHOLD = float(os.getenv('CONFIDENCE_THRESHOLD', '0.3'))
 os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
 
-ESP32_CAM_IP = os.getenv('ESP32_CAM_IP', '10.124.88.102')
+ESP32_CAM_IP = os.getenv('ESP32_CAM_IP', '10.192.231.102')
 ESP32_CAM_RESOLUTION = '640x480'
 ESP32_CAM_TIMEOUT = int(os.getenv('ESP32_CAM_TIMEOUT', '10'))
 
@@ -66,7 +66,7 @@ auto_recognition_thread = None
 auto_recognition_stop_event = threading.Event()
 last_auto_unlock_ts = 0.0
 
-BACKEND_GO_URL = os.getenv('BACKEND_GO_URL', 'http://10.124.88.57:8080')
+BACKEND_GO_URL = os.getenv('BACKEND_GO_URL', 'https://ee6fe8f80d6f.ngrok-free.app')
 # Safeguard common typo
 if 'loccalhost' in BACKEND_GO_URL:
     BACKEND_GO_URL = BACKEND_GO_URL.replace('loccalhost', 'localhost')
@@ -83,9 +83,9 @@ if MQTT_AVAILABLE:
     try:
         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
         mqtt_client.loop_start()
-        print(f"✅ MQTT Connected: {MQTT_BROKER}:{MQTT_PORT}")
+        print(f" MQTT Connected: {MQTT_BROKER}:{MQTT_PORT}")
     except Exception as e:
-        print(f"⚠️  MQTT Connection failed: {e}")
+        print(f"  MQTT Connection failed: {e}")
         mqtt_client = None
 
 
@@ -134,13 +134,13 @@ def decode_base64_image(base64_string):
         img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
         
         if img is None:
-            print(f"❌ [decode_base64_image] Failed to decode image - cv2.imdecode returned None")
+            print(f" [decode_base64_image] Failed to decode image - cv2.imdecode returned None")
             return None
             
-        print(f"✅ [decode_base64_image] Image decoded successfully: shape={img.shape}, dtype={img.dtype}")
+        print(f" [decode_base64_image] Image decoded successfully: shape={img.shape}, dtype={img.dtype}")
         return img
     except Exception as e:
-        print(f"❌ [decode_base64_image] Exception: {str(e)}")
+        print(f" [decode_base64_image] Exception: {str(e)}")
         import traceback
         traceback.print_exc()
         return None
@@ -151,20 +151,20 @@ def recognize_face_dlib(image):
     face_locations = face_recognition.face_locations(rgb_image)
     
     if not face_locations:
-        print(f"❌ [RECOGNIZE] No face detected in image")
+        print(f" [RECOGNIZE] No face detected in image")
         return None, None, 0.0, "No face detected"
     
-    print(f"✅ [RECOGNIZE] Detected {len(face_locations)} face(s)")
+    print(f" [RECOGNIZE] Detected {len(face_locations)} face(s)")
     
     face_encodings = face_recognition.face_encodings(rgb_image, face_locations)
     
     if not face_encodings:
-        print(f"❌ [RECOGNIZE] Could not encode face")
+        print(f" [RECOGNIZE] Could not encode face")
         return None, None, 0.0, "Could not encode face"
     
     for face_encoding in face_encodings:
         if not known_face_encodings:
-            print(f"⚠️  [RECOGNIZE] No known faces enrolled yet")
+            print(f"  [RECOGNIZE] No known faces enrolled yet")
             return None, None, 0.0, "No known faces enrolled"
         
         face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
@@ -397,17 +397,17 @@ def recognize():
         data = request.get_json()
         
         if not data or 'image' not in data:
-            print("❌ [API /recognize] No image provided")
+            print(" [API /recognize] No image provided")
             return jsonify({'success': False, 'recognized': False, 'error': 'No image provided'}), 400
         
-        print("📥 [API /recognize] Received request from backend Go")
+        print(" [API /recognize] Received request from backend Go")
         image = decode_base64_image(data['image'])
         
         if image is None:
-            print("❌ [API /recognize] Invalid/corrupt image format")
+            print(" [API /recognize] Invalid/corrupt image format")
             return jsonify({'success': False, 'recognized': False, 'error': 'Invalid image format'}), 400
         
-        print(f"✅ [API /recognize] Image decoded successfully: {image.shape}")
+        print(f" [API /recognize] Image decoded successfully: {image.shape}")
         
         if USE_FACE_RECOGNITION:
             user_id, name, confidence, message = recognize_face_dlib(image)
@@ -416,7 +416,7 @@ def recognize():
         
         recognized = user_id is not None
         
-        print(f"📊 [API /recognize] Recognition result: recognized={recognized}, user_id={user_id}, name={name}")
+        print(f" [API /recognize] Recognition result: recognized={recognized}, user_id={user_id}, name={name}")
         
         # 🔌 PUBLISH MQTT - Control door/buzzer based on recognition result
         if mqtt_client:
@@ -424,16 +424,16 @@ def recognize():
                 # UNLOCK DOOR
                 door_payload = json.dumps({"action": "unlock", "user_id": user_id, "name": name})
                 mqtt_client.publish(f"{MQTT_TOPIC_PREFIX}/door/control", door_payload)
-                print(f"✅ [MQTT] Published door unlock: {door_payload} to {MQTT_TOPIC_PREFIX}/door/control")
-                print(f"✅ [Note] Backend Go will handle access log recording for user {name}")
+                print(f" [MQTT] Published door unlock: {door_payload} to {MQTT_TOPIC_PREFIX}/door/control")
+                print(f" [Note] Backend Go will handle access log recording for user {name}")
             else:
                 # BUZZER WARNING
                 buzzer_payload = json.dumps({"action": "on", "duration": 1000})
                 mqtt_client.publish(f"{MQTT_TOPIC_PREFIX}/buzzer/control", buzzer_payload)
-                print(f"⚠️  [MQTT] Published buzzer warning: {buzzer_payload} to {MQTT_TOPIC_PREFIX}/buzzer/control")
-                print(f"✅ [Note] Backend Go will handle failed access log recording")
+                print(f"  [MQTT] Published buzzer warning: {buzzer_payload} to {MQTT_TOPIC_PREFIX}/buzzer/control")
+                print(f" [Note] Backend Go will handle failed access log recording")
         else:
-            print(f"❌ [MQTT] MQTT client not connected! Door control will NOT work!")
+            print(f" [MQTT] MQTT client not connected! Door control will NOT work!")
         
         response = {
             'success': True,
@@ -445,12 +445,12 @@ def recognize():
             'mqtt_connected': mqtt_client is not None
         }
         
-        print(f"📤 [API /recognize] Response: {response}")
+        print(f" [API /recognize] Response: {response}")
         
         return jsonify(response)
         
     except Exception as e:
-        print(f"❌ [API /recognize] Exception: {str(e)}")
+        print(f" [API /recognize] Exception: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'recognized': False, 'error': str(e)}), 500
@@ -517,24 +517,24 @@ def fetch_image_from_esp32cam(cam_ip=None, resolution=None):
 
                 if image is not None:
                     if attempt > 1:
-                        print(f"ℹ️  Fallback URL succeeded: {url}")
+                        print(f"  Fallback URL succeeded: {url}")
                     return image, None
                 else:
                     err = "Failed to decode image"
-                    print(f"⚠️  Decode failed (attempt {attempt}, url={url}): {err}")
+                    print(f"  Decode failed (attempt {attempt}, url={url}): {err}")
             else:
                 err = f"HTTP error: {response.status_code}"
-                print(f"⚠️  HTTP error (attempt {attempt}, url={url}): {err}")
+                print(f"  HTTP error (attempt {attempt}, url={url}): {err}")
 
         except requests.exceptions.Timeout:
             err = "Connection timeout"
-            print(f"⚠️  Timeout (attempt {attempt}, url={url})")
+            print(f"  Timeout (attempt {attempt}, url={url})")
         except requests.exceptions.ConnectionError:
             err = f"Cannot connect to {cam_ip}"
-            print(f"⚠️  Connection error (attempt {attempt}, url={url})")
+            print(f"  Connection error (attempt {attempt}, url={url})")
         except Exception as e:
             err = str(e)
-            print(f"⚠️  Exception (attempt {attempt}, url={url}): {err}")
+            print(f"  Exception (attempt {attempt}, url={url}): {err}")
 
         # If first attempt failed, try fallback; otherwise return last error
     return None, err
@@ -542,25 +542,25 @@ def fetch_image_from_esp32cam(cam_ip=None, resolution=None):
 
 def auto_recognition_loop():
     """Background loop pulling frames from ESP32-CAM for auto unlock."""
-    print(f"🚀 Auto recognition loop started (every {AUTO_RECOGNITION_INTERVAL}s)")
+    print(f" Auto recognition loop started (every {AUTO_RECOGNITION_INTERVAL}s)")
     while not auto_recognition_stop_event.is_set():
         start_ts = time.time()
 
         if not USE_FACE_RECOGNITION:
-            print("⚠️  Auto recognition skipped: face_recognition not available")
+            print("  Auto recognition skipped: face_recognition not available")
             auto_recognition_stop_event.wait(AUTO_RECOGNITION_INTERVAL)
             continue
 
         frame, err = fetch_image_from_esp32cam()
         if frame is None:
-            print(f"⚠️  Auto recognition: failed to fetch frame ({err})")
+            print(f"  Auto recognition: failed to fetch frame ({err})")
             auto_recognition_stop_event.wait(AUTO_RECOGNITION_INTERVAL)
             continue
 
         user_id, name, confidence, message = recognize_face_dlib(frame)
         recognized = user_id is not None
 
-        print(f"🔍 Auto recognition result: recognized={recognized}, name={name}, conf={confidence:.4f}, msg={message}")
+        print(f" Auto recognition result: recognized={recognized}, name={name}, conf={confidence:.4f}, msg={message}")
 
         if mqtt_client:
             if recognized:
@@ -568,7 +568,7 @@ def auto_recognition_loop():
                 now_ts = time.time()
                 if now_ts - last_auto_unlock_ts < AUTO_UNLOCK_COOLDOWN:
                     remaining = AUTO_UNLOCK_COOLDOWN - (now_ts - last_auto_unlock_ts)
-                    print(f"⏳ Auto unlock cooldown active ({remaining:.1f}s left); skipping unlock publish")
+                    print(f" Auto unlock cooldown active ({remaining:.1f}s left); skipping unlock publish")
                 else:
                     # Send both command/action for compatibility with ESP32 & Go backend
                     door_payload_dict = {
@@ -581,7 +581,7 @@ def auto_recognition_loop():
                     door_payload = json.dumps(door_payload_dict)
                     mqtt_client.publish(f"{MQTT_TOPIC_PREFIX}/door/control", door_payload)
                     last_auto_unlock_ts = now_ts
-                    print(f"✅ [MQTT] Auto door unlock published: {door_payload}")
+                    print(f" [MQTT] Auto door unlock published: {door_payload}")
 
                     # Log access to backend
                     try:
@@ -591,14 +591,14 @@ def auto_recognition_loop():
                             "status": "success",
                             "message": "auto-recognition"
                         }, timeout=3)
-                        print("✅ [Backend Log] Auto recognition success logged")
+                        print(" [Backend Log] Auto recognition success logged")
                     except Exception as log_err:
-                        print(f"⚠️  [Backend Log] Failed to log auto recognition: {log_err}")
+                        print(f"  [Backend Log] Failed to log auto recognition: {log_err}")
             else:
                 # Unknown face; avoid buzzer spam in loop
-                print("⚠️  Auto recognition: face not recognized (no buzzer)")
+                print("  Auto recognition: face not recognized (no buzzer)")
         else:
-            print("❌ [MQTT] MQTT client not connected; auto unlock not sent")
+            print(" [MQTT] MQTT client not connected; auto unlock not sent")
 
         elapsed = time.time() - start_ts
         wait_time = max(0, AUTO_RECOGNITION_INTERVAL - elapsed)
@@ -608,10 +608,10 @@ def auto_recognition_loop():
 def start_auto_recognition_thread():
     global auto_recognition_thread
     if not AUTO_RECOGNITION:
-        print("ℹ️  Auto recognition disabled via AUTO_RECOGNITION=false")
+        print("ℹ Auto recognition disabled via AUTO_RECOGNITION=false")
         return
     if auto_recognition_thread and auto_recognition_thread.is_alive():
-        print("ℹ️  Auto recognition thread already running")
+        print("  Auto recognition thread already running")
         return
     auto_recognition_stop_event.clear()
     auto_recognition_thread = threading.Thread(target=auto_recognition_loop, daemon=True)
@@ -622,7 +622,7 @@ def stop_auto_recognition_thread():
     auto_recognition_stop_event.set()
     if auto_recognition_thread:
         auto_recognition_thread.join(timeout=1)
-        print("🛑 Auto recognition thread stopped")
+        print(" Auto recognition thread stopped")
 
 
 @app.route('/cam-proxy', methods=['GET'])
@@ -705,11 +705,11 @@ def recognize_base64():
     """
     # Handle CORS preflight
     if request.method == 'OPTIONS':
-        print("🔄 [API /recognize-base64] CORS preflight request")
+        print(" [API /recognize-base64] CORS preflight request")
         return jsonify({'success': True}), 200
     
     print("\n" + "="*80)
-    print("📥 [API /recognize-base64] ===== NEW REQUEST =====")
+    print(" [API /recognize-base64] ===== NEW REQUEST =====")
     print(f"   Method: {request.method}")
     print(f"   Content-Type: {request.content_type}")
     print(f"   Remote Address: {request.remote_addr}")
@@ -718,7 +718,7 @@ def recognize_base64():
         data = request.get_json()
         
         if not data:
-            print("❌ [API /recognize-base64] No JSON data received")
+            print(" [API /recognize-base64] No JSON data received")
             return jsonify({
                 'success': False,
                 'recognized': False,
@@ -726,7 +726,7 @@ def recognize_base64():
             }), 400
             
         if 'image' not in data:
-            print("❌ [API /recognize-base64] 'image' field not found in request")
+            print(" [API /recognize-base64] 'image' field not found in request")
             return jsonify({
                 'success': False,
                 'recognized': False,
@@ -734,22 +734,22 @@ def recognize_base64():
             }), 400
         
         image_data = data['image']
-        print(f"✅ [API /recognize-base64] Image data received, length: {len(image_data)}")
-        print("📥 [API /recognize-base64] Decoding base64...")
+        print(f" [API /recognize-base64] Image data received, length: {len(image_data)}")
+        print(" [API /recognize-base64] Decoding base64...")
         image = decode_base64_image(data['image'])
         
         if image is None:
-            print("❌ [API /recognize-base64] Invalid/corrupt image format")
+            print(" [API /recognize-base64] Invalid/corrupt image format")
             return jsonify({
                 'success': False,
                 'recognized': False,
                 'message': 'Invalid image format'
             }), 400
         
-        print(f"✅ [API /recognize-base64] Image decoded successfully: {image.shape}")
+        print(f" [API /recognize-base64] Image decoded successfully: {image.shape}")
         
         if not USE_FACE_RECOGNITION:
-            print("❌ [API /recognize-base64] Face recognition library not available")
+            print(" [API /recognize-base64] Face recognition library not available")
             return jsonify({
                 'success': False,
                 'recognized': False,
@@ -760,7 +760,7 @@ def recognize_base64():
         
         recognized = user_id is not None
         
-        print(f"📊 [API /recognize-base64] Recognition result: recognized={recognized}, user_id={user_id}, name={name}")
+        print(f" [API /recognize-base64] Recognition result: recognized={recognized}, user_id={user_id}, name={name}")
         
         # 🔌 PUBLISH MQTT - Control door/buzzer based on recognition result
         if mqtt_client:
@@ -768,7 +768,7 @@ def recognize_base64():
                 # UNLOCK DOOR
                 door_payload = json.dumps({"action": "unlock", "user_id": user_id, "name": name})
                 mqtt_client.publish(f"{MQTT_TOPIC_PREFIX}/door/control", door_payload)
-                print(f"✅ [MQTT] Published door unlock: {door_payload} to {MQTT_TOPIC_PREFIX}/door/control")
+                print(f" [MQTT] Published door unlock: {door_payload} to {MQTT_TOPIC_PREFIX}/door/control")
                 
                 # Log access ke backend
                 try:
@@ -777,14 +777,14 @@ def recognize_base64():
                         "method": "face",
                         "status": "success"
                     }, timeout=3)
-                    print(f"✅ [Backend Log] Access log recorded")
+                    print(f" [Backend Log] Access log recorded")
                 except Exception as log_err:
-                    print(f"⚠️  [Backend Log] Failed to log: {log_err}")
+                    print(f"  [Backend Log] Failed to log: {log_err}")
             else:
                 # BUZZER WARNING
                 buzzer_payload = json.dumps({"action": "on", "duration": 1000})
                 mqtt_client.publish(f"{MQTT_TOPIC_PREFIX}/buzzer/control", buzzer_payload)
-                print(f"⚠️  [MQTT] Published buzzer warning: {buzzer_payload} to {MQTT_TOPIC_PREFIX}/buzzer/control")
+                print(f"  [MQTT] Published buzzer warning: {buzzer_payload} to {MQTT_TOPIC_PREFIX}/buzzer/control")
                 
                 # Log failed attempt
                 try:
@@ -793,11 +793,11 @@ def recognize_base64():
                         "status": "failed",
                         "message": "Face not recognized"
                     }, timeout=3)
-                    print(f"✅ [Backend Log] Failed access log recorded")
+                    print(f" [Backend Log] Failed access log recorded")
                 except Exception as log_err:
-                    print(f"⚠️  [Backend Log] Failed to log: {log_err}")
+                    print(f"  [Backend Log] Failed to log: {log_err}")
         else:
-            print(f"❌ [MQTT] MQTT client not connected! Door control will NOT work!")
+            print(f" [MQTT] MQTT client not connected! Door control will NOT work!")
         
         response = {
             'success': True,
@@ -809,13 +809,13 @@ def recognize_base64():
             'mqtt_connected': mqtt_client is not None
         }
         
-        print(f"📤 [API /recognize-base64] Response: {response}")
+        print(f" [API /recognize-base64] Response: {response}")
         print("="*80 + "\n")
         
         return jsonify(response), 200
         
     except Exception as e:
-        print(f"❌ [API /recognize-base64] Exception: {str(e)}")
+        print(f" [API /recognize-base64] Exception: {str(e)}")
         import traceback
         traceback.print_exc()
         print("="*80 + "\n")
